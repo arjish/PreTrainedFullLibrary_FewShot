@@ -5,10 +5,9 @@ import torch
 import torch.nn as nn
 import argparse
 
-model_names = ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152',
-               'densenet121', 'densenet161', 'densenet169', 'densenet201']
+model_names = []
 
-parser = argparse.ArgumentParser(description='Finetune Classifier')
+parser = argparse.ArgumentParser(description='Ensemble Classifier')
 parser.add_argument('data', help='path to dataset')
 parser.add_argument('--soft', action='store_true', default=False,
     help='set for soft bagging, otherwise hard bagging')
@@ -18,38 +17,42 @@ parser.add_argument('--kshot', default=1, type=int,
     help='number of shots (support images per class)')
 parser.add_argument('--kquery', default=15, type=int,
     help='number of query images per class')
-parser.add_argument('--num_epochs', default=100, type=int,
+parser.add_argument('--num_epochs', default=50, type=int,
     help='number of epochs')
 parser.add_argument('--n_problems', default=600, type=int,
     help='number of test problems')
-parser.add_argument('--hidden_size', default=512, type=int,
-    help='hidden layer size')
-parser.add_argument('--lr', default=0.001, type=float,
+parser.add_argument('--hidden_size1', default=512, type=int,
+    help='hidden layer1 size')
+parser.add_argument('--hidden_size2', default=32, type=int,
+    help='hidden layer2 size')
+parser.add_argument('--learning_rate', default=0.01, type=float,
     help='learning rate')
-parser.add_argument('--gamma', default=0.2, type=float,
-    help='L2 regularization constant')
-parser.add_argument('--linear', action='store_true', default=False,
-    help='set for linear model, otherwise use hidden layer')
-parser.add_argument('--nol2', action='store_true', default=False,
+parser.add_argument('--gamma', default=0.5, type=float,
+    help='constant value for L2')
+parser.add_argument('--nol2', default = 'False', type=str,
     help='set for No L2 regularization, otherwise use L2')
-
+parser.add_argument('--linear', default='False', type=str,
+    help='set for linear model, otherwise use hidden layer')
 parser.add_argument('--gpu', default=0, type=int,
     help='GPU id to use.')
+parser.add_argument('--model_choice', default = 'resnet18', type=str,
+    help='set for backbone models to choose from, otherwise use resnet18')
+parser.add_argument('--val_on_birds', default = 'False', type=str,
+    help='set for indicating if validate on birds dataset')
 
 args = parser.parse_args()
 
 # Device configuration
 device = torch.device("cuda:"+str(args.gpu) if torch.cuda.is_available() else "cpu")
 
-
 # Fully connected neural network with one hidden layer
 class ClassifierNetwork(nn.Module):
-    def __init__(self, input_size, hidden_size, num_classes):
+    def __init__(self, input_size, hidden_size1, num_classes):
         super(ClassifierNetwork, self).__init__()
         if not args.linear:
-            self.fc1 = nn.Linear(input_size, hidden_size)
+            self.fc1 = nn.Linear(input_size, hidden_size1)
             self.tanh = nn.Tanh()
-            self.fc2 = nn.Linear(hidden_size, num_classes)
+            self.fc2 = nn.Linear(hidden_size1, num_classes)
         else:
             self.fc1 = nn.Linear(input_size, num_classes)
 
@@ -62,7 +65,7 @@ class ClassifierNetwork(nn.Module):
 
 
 def train_model(model, features, labels, criterion, optimizer,
-                num_epochs=50):
+                num_epochs, g):
     # Train the model
     x = torch.tensor(features, dtype=torch.float32, device=device)
     y = torch.tensor(labels, dtype=torch.long, device=device)
@@ -71,7 +74,7 @@ def train_model(model, features, labels, criterion, optimizer,
         outputs = model(x)
         loss = criterion(outputs, y)
         if not args.nol2:
-            c = torch.tensor(args.gamma, device=device)
+            c = torch.tensor(g, device=device)
             l2_reg = torch.tensor(0., device=device)
             for name, param in model.named_parameters():
                 if 'weight' in name:
@@ -83,9 +86,6 @@ def train_model(model, features, labels, criterion, optimizer,
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
-        # print('Epoch [{}/{}],  Loss: {:.4f}'
-        #     .format(epoch + 1, num_epochs, loss.item()))
 
 
 def test_model(models, features_list, labels):
@@ -111,7 +111,6 @@ def test_model(models, features_list, labels):
 
     return 100 * correct / total
 
-
 def main():
     data = args.data
     nway = args.nway
@@ -120,7 +119,23 @@ def main():
     n_img = kshot + kquery
     n_problems = args.n_problems
     num_epochs = args.num_epochs
-    hidden_size = args.hidden_size
+    hidden_size1 = args.hidden_size1
+    learning_rate = args.learning_rate
+    gamma = args.gamma
+    model_choice = args.model_choice
+    model_names = []
+    if model_choice == 'All':
+        model_names = ['resnet18',
+               'resnet34',
+               'resnet50',
+               'resnet101',
+               'resnet152',
+               'densenet121',
+               'densenet161',
+               'densenet169',
+               'densenet201']
+    else:
+        model_names.append(model_choice)
 
     data_path = os.path.join(data, 'transferred_features_all')
 
@@ -133,23 +148,160 @@ def main():
 
     accs = []
     for i in range(n_problems):
-        sampled_label_folders = random.sample(labels, nway)
+        sampled_labels = random.sample(labels, nway)
 
         features_support_list, labels_support, \
         features_query_list, labels_query = get_features_fewshot_full_library(kshot, data_path, model_names,
-                                                                              sampled_label_folders, range(nway), nb_samples=n_img, shuffle=True)
+            sampled_labels, range(nway), nb_samples=n_img, shuffle=True)
 
         models = []
         for model_id in range(len(model_names)):
             input_size = features_support_list[model_id].shape[1]
-            # print('features_query.shape:', features_query.shape)
-
-            models.append(ClassifierNetwork(input_size, hidden_size, nway).to(device))
+            #Change the hyper-parameters according to the model choice
+            if nway == 5:
+                if model_names[model_id] == 'densenet121':
+                    num_epochs = 200
+                    hidden_size1 = 1024
+                    learning_rate = 0.001
+                    gamma = 0.2
+                if model_names[model_id] == 'densenet161':
+                    num_epochs = 100
+                    hidden_size1 = 1024
+                    learning_rate = 0.0005
+                    gamma = 0.2
+                if model_names[model_id] == 'densenet169':
+                    num_epochs = 300
+                    hidden_size1 = 1024
+                    learning_rate = 0.0005
+                    gamma = 0.5
+                if model_names[model_id] == 'densenet201':
+                    num_epochs = 100
+                    hidden_size1 = 512
+                    learning_rate = 0.0005
+                    gamma = 0.5
+                if model_names[model_id] == 'resnet101':
+                    num_epochs = 100
+                    hidden_size1 = 512
+                    learning_rate = 0.001
+                    gamma = 0.1
+                if model_names[model_id] == 'resnet152':
+                    num_epochs = 300
+                    hidden_size1 = 512
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'resnet18':
+                    num_epochs = 200
+                    hidden_size1 = 512
+                    learning_rate = 0.001
+                    gamma = 0.2
+                if model_names[model_id] == 'resnet34':
+                    num_epochs = 100
+                    hidden_size1 = 1024
+                    learning_rate = 0.0005
+                    gamma = 0.2
+                if model_names[model_id] == 'resnet50':
+                    num_epochs = 300
+                    hidden_size1 = 2048
+                    learning_rate = 0.0005
+                    gamma = 0.1
+            if nway == 20:
+                if model_names[model_id] == 'densenet121':
+                    num_epochs = 100
+                    hidden_size1 = 1024
+                    learning_rate = 0.0005
+                    gamma = 0.2
+                if model_names[model_id] == 'densenet161':
+                    num_epochs = 100
+                    hidden_size1 = 512
+                    learning_rate = 0.001
+                    gamma = 0.1
+                if model_names[model_id] == 'densenet169':
+                    num_epochs = 300
+                    hidden_size1 = 512
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'densenet201':
+                    num_epochs = 200
+                    hidden_size1 = 1024
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'resnet101':
+                    num_epochs = 200
+                    hidden_size1 = 2048
+                    learning_rate = 0.0005
+                    gamma = 0.2
+                if model_names[model_id] == 'resnet152':
+                    num_epochs = 100
+                    hidden_size1 = 512
+                    learning_rate = 0.0005
+                    gamma = 0.2
+                if model_names[model_id] == 'resnet18':
+                    num_epochs = 200
+                    hidden_size1 = 2048
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'resnet34':
+                    num_epochs = 100
+                    hidden_size1 = 1024
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'resnet50':
+                    num_epochs = 100
+                    hidden_size1 = 1024
+                    learning_rate = 0.0005
+                    gamma = 0.1
+            if nway == 40:
+                if model_names[model_id] == 'densenet121':
+                    num_epochs = 100
+                    hidden_size1 = 2048
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'densenet161':
+                    num_epochs = 100
+                    hidden_size1 = 512
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'densenet169':
+                    num_epochs = 100
+                    hidden_size1 = 512
+                    learning_rate = 0.001
+                    gamma = 0.2
+                if model_names[model_id] == 'densenet201':
+                    num_epochs = 100
+                    hidden_size1 = 1024
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'resnet101':
+                    num_epochs = 100
+                    hidden_size1 = 512
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'resnet152':
+                    num_epochs = 100
+                    hidden_size1 = 1024
+                    learning_rate = 0.0005
+                    gamma = 0.1
+                if model_names[model_id] == 'resnet18':
+                    num_epochs = 100
+                    hidden_size1 = 512
+                    learning_rate = 0.001
+                    gamma = 0.1
+                if model_names[model_id] == 'resnet34':
+                    num_epochs = 100
+                    hidden_size1 = 2048
+                    learning_rate = 0.0005
+                    gamma = 0.2
+                if model_names[model_id] == 'resnet50':
+                    num_epochs = 100
+                    hidden_size1 = 512
+                    learning_rate = 0.0005
+                    gamma = 0.1
+            models.append(ClassifierNetwork(input_size, hidden_size1, nway).to(device))
             # Loss and optimizer
             criterion = nn.CrossEntropyLoss()
-            optimizer = torch.optim.Adam(models[model_id].parameters(), lr=args.lr)
+            optimizer = torch.optim.Adam(models[model_id].parameters(), lr=learning_rate)
             train_model(models[model_id], features_support_list[model_id], labels_support,
-                        criterion, optimizer, num_epochs)
+                        criterion, optimizer, num_epochs, gamma)
 
         accuracy_test = test_model(models, features_query_list, labels_query)
 
@@ -161,24 +313,36 @@ def main():
     ci95 = round(1.96 * stds / np.sqrt(n_problems), 2)
 
     # write the results to a file:
-    fp = open('results_finetune.txt', 'a')
-    if args.soft:
-        result = 'Setting: Soft bagging ' + '-' + data + '- ' + ', '.join(map(str, model_names))
+    if args.val_on_birds:
+        if args.model_choice == 'All':
+            fp = open('All_val_on_birds_'+str(nway) + 'way_' + str(kshot) + 'shot_results.txt', 'a')
+        else:
+            fp = open('Single_val_on_birds_'+str(nway) + 'way_' + str(kshot) + 'shot_results.txt', 'a')
     else:
-        result = 'Setting: Hard bagging ' + '-' + data + '- ' + ', '.join(map(str, model_names))
+        if args.model_choice == 'All':
+            fp = open('All_test_'+str(nway) + 'way_' + str(kshot) + 'shot_'+'val_on_birds_5shot_results.txt', 'a')
+        else:
+            fp = open('Single_test_'+str(nway) + 'way_' + str(kshot) + 'shot_'+'val_on_birds_5shot_results.txt', 'a')
+    if args.soft:
+        result = 'Setting: Soft ensemble-' + 'num_epochs_' + str(num_epochs) + '-hidden_size1_' \
+                 + str(hidden_size1) + '-learning_rate_' + str(learning_rate) + '-reg_gamma_' \
+                 + str(gamma) + '-' + data + '- ' + ', '.join(map(str, model_names))
+    else:
+        result = 'Setting: Hard ensemble-' + 'num_epochs_' + str(num_epochs) + '-hidden_size1_' \
+                 + str(hidden_size1) + '-learning_rate_' + str(learning_rate) + '-reg_gamma_' \
+                 + str(gamma) + '-' + data + '- ' + ', '.join(map(str, model_names))
     if args.linear:
         result += ' linear'
     if args.nol2:
         result += ' No L2'
-    result += ': ' + str(nway) + '-way ' + str(kshot) + '-shot'
-    result += '; Accuracy: ' + str(acc_avg)
+    result += '-' + str(nway) + ' way-' + str(kshot) + ' shot'
+    result += ';- Accuracy: ' + str(acc_avg)
     result += ', ' + str(ci95) + '\n'
     fp.write(result)
     fp.close()
 
     print("Accuracy:", acc_avg)
     print("CI95:", ci95)
-
 
 if __name__=='__main__':
     main()

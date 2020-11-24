@@ -9,7 +9,7 @@ import argparse
 model_names = ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152',
                'densenet121', 'densenet161', 'densenet169', 'densenet201']
 
-parser = argparse.ArgumentParser(description='Finetune Classifier')
+parser = argparse.ArgumentParser(description='Single Library Classifier')
 parser.add_argument('data', help='path to dataset')
 parser.add_argument('--model', default='resnet18',
     choices=model_names, help='model architecture')

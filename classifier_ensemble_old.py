@@ -3,14 +3,15 @@ from utils import get_features_fewshot_full_library
 import os, random
 import torch
 import torch.nn as nn
-
 import argparse
 
 model_names = ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152',
                'densenet121', 'densenet161', 'densenet169', 'densenet201']
 
-parser = argparse.ArgumentParser(description='Full Library Classifier')
+parser = argparse.ArgumentParser(description='Finetune Classifier')
 parser.add_argument('data', help='path to dataset')
+parser.add_argument('--soft', action='store_true', default=False,
+    help='set for soft bagging, otherwise hard bagging')
 parser.add_argument('--nway', default=5, type=int,
     help='number of classes')
 parser.add_argument('--kshot', default=1, type=int,
@@ -21,16 +22,17 @@ parser.add_argument('--num_epochs', default=100, type=int,
     help='number of epochs')
 parser.add_argument('--n_problems', default=600, type=int,
     help='number of test problems')
-parser.add_argument('--hidden_size', default=1024, type=int,
+parser.add_argument('--hidden_size', default=512, type=int,
     help='hidden layer size')
 parser.add_argument('--lr', default=0.001, type=float,
     help='learning rate')
-parser.add_argument('--gamma', default=0.5, type=float,
+parser.add_argument('--gamma', default=0.2, type=float,
     help='L2 regularization constant')
-parser.add_argument('--nol2', action='store_true', default=False,
-    help='set for No L2 regularization, otherwise use L2')
 parser.add_argument('--linear', action='store_true', default=False,
     help='set for linear model, otherwise use hidden layer')
+parser.add_argument('--nol2', action='store_true', default=False,
+    help='set for No L2 regularization, otherwise use L2')
+
 parser.add_argument('--gpu', default=0, type=int,
     help='GPU id to use.')
 
@@ -42,12 +44,12 @@ device = torch.device("cuda:"+str(args.gpu) if torch.cuda.is_available() else "c
 
 # Fully connected neural network with one hidden layer
 class ClassifierNetwork(nn.Module):
-    def __init__(self, input_size, num_classes):
+    def __init__(self, input_size, hidden_size, num_classes):
         super(ClassifierNetwork, self).__init__()
         if not args.linear:
-            self.fc1 = nn.Linear(input_size, args.hidden_size)
+            self.fc1 = nn.Linear(input_size, hidden_size)
             self.tanh = nn.Tanh()
-            self.fc2 = nn.Linear(args.hidden_size, num_classes)
+            self.fc2 = nn.Linear(hidden_size, num_classes)
         else:
             self.fc1 = nn.Linear(input_size, num_classes)
 
@@ -86,14 +88,24 @@ def train_model(model, features, labels, criterion, optimizer,
         #     .format(epoch + 1, num_epochs, loss.item()))
 
 
-def test_model(model, features, labels):
-    x = torch.tensor(features, dtype=torch.float32, device=device)
+def test_model(models, features_list, labels):
     y = torch.tensor(labels, dtype=torch.long, device=device)
     with torch.no_grad():
         correct = 0
         total = 0
-        outputs = model(x)
-        _, predicted = torch.max(outputs.data, 1)
+        outputs_list = []
+        for i, model in enumerate(models):
+            x = torch.tensor(features_list[i], dtype=torch.float32, device=device)
+            outputs_list.append(model(x))
+        preds = torch.stack(outputs_list, dim=0)
+
+        if args.soft:
+            preds = torch.mean(preds, dim=0)
+            _, predicted = torch.max(preds, 1)
+        else:
+            _, preds = torch.max(preds, dim=-1)
+            predicted, _ = torch.mode(preds, dim=0)
+
         total += y.size(0)
         correct += (predicted==y).sum().item()
 
@@ -108,37 +120,38 @@ def main():
     n_img = kshot + kquery
     n_problems = args.n_problems
     num_epochs = args.num_epochs
+    hidden_size = args.hidden_size
 
     data_path = os.path.join(data, 'transferred_features_all')
 
     folder_0 = os.path.join(data_path, model_names[0])
-    labels = [label \
+    metaval_labels = [label \
                       for label in os.listdir(folder_0) \
                       if os.path.isdir(os.path.join(folder_0, label)) \
                       ]
+    labels = metaval_labels
 
     accs = []
     for i in range(n_problems):
-
-        sampled_labels = random.sample(labels, nway)
+        sampled_label_folders = random.sample(labels, nway)
 
         features_support_list, labels_support, \
         features_query_list, labels_query = get_features_fewshot_full_library(kshot, data_path, model_names,
-                                                                              sampled_labels, range(nway), nb_samples=n_img, shuffle=True)
-        features_support = np.concatenate(features_support_list, axis=-1)
-        features_query = np.concatenate(features_query_list, axis=-1)
+                                                                              sampled_label_folders, range(nway), nb_samples=n_img, shuffle=True)
 
-        input_size = features_support.shape[1]
-        # print('features_query.shape:', features_query.shape)
+        models = []
+        for model_id in range(len(model_names)):
+            input_size = features_support_list[model_id].shape[1]
+            # print('features_query.shape:', features_query.shape)
 
-        model = ClassifierNetwork(input_size, nway).to(device)
-        # Loss and optimizer
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+            models.append(ClassifierNetwork(input_size, hidden_size, nway).to(device))
+            # Loss and optimizer
+            criterion = nn.CrossEntropyLoss()
+            optimizer = torch.optim.Adam(models[model_id].parameters(), lr=args.lr)
+            train_model(models[model_id], features_support_list[model_id], labels_support,
+                        criterion, optimizer, num_epochs)
 
-        train_model(model, features_support, labels_support, criterion, optimizer, num_epochs)
-
-        accuracy_test = test_model(model, features_query, labels_query)
+        accuracy_test = test_model(models, features_query_list, labels_query)
 
         print(round(accuracy_test, 2))
         accs.append(accuracy_test)
@@ -148,8 +161,11 @@ def main():
     ci95 = round(1.96 * stds / np.sqrt(n_problems), 2)
 
     # write the results to a file:
-    fp = open('results.txt', 'a')
-    result = 'Setting: Full library ' + '-' + data + '- ' + ', '.join(map(str, model_names))
+    fp = open('results_finetune.txt', 'a')
+    if args.soft:
+        result = 'Setting: Soft bagging ' + '-' + data + '- ' + ', '.join(map(str, model_names))
+    else:
+        result = 'Setting: Hard bagging ' + '-' + data + '- ' + ', '.join(map(str, model_names))
     if args.linear:
         result += ' linear'
     if args.nol2:
