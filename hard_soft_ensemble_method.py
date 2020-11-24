@@ -1,5 +1,5 @@
 import numpy as np
-from utils.utils import get_features_fewshot_single
+from utils.utils import get_features_fewshot_full_library
 import os, random
 import torch
 import torch.nn as nn
