@@ -32,7 +32,7 @@ for k, v in features_dim_map.items():
     star_end_idx[k] = (start, end)
     start = end
 
-parser = argparse.ArgumentParser(description='Get Jaccard Index')
+parser = argparse.ArgumentParser(description='Get statistics (Jaccard index, Pearson coeff., etc.)')
 
 parser.add_argument('--nway', default=40, type=int,
     help='number of classes')

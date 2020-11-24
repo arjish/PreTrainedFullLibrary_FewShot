@@ -27,7 +27,7 @@ features_dim_map = {
 
 count_features = dict()
 
-parser = argparse.ArgumentParser(description='Finetune Classifier')
+parser = argparse.ArgumentParser(description='Get weights for fewshot')
 
 parser.add_argument('data', help='path to dataset')
 parser.add_argument('--nway', default=40, type=int,
