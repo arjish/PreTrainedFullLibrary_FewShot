@@ -12,8 +12,6 @@ parser = argparse.ArgumentParser(description='Finetune Classifier')
 parser.add_argument('data', help='path to dataset')
 parser.add_argument('--soft', action='store_true', default=False,
     help='set for soft bagging, otherwise hard bagging')
-parser.add_argument('--domain_type', default='cross',
-    choices=['self', 'cross'], help='self or cross domain testing')
 parser.add_argument('--nway', default=5, type=int,
     help='number of classes')
 parser.add_argument('--kshot', default=1, type=int,
@@ -26,8 +24,10 @@ parser.add_argument('--n_problems', default=600, type=int,
     help='number of test problems')
 parser.add_argument('--hidden_size', default=512, type=int,
     help='hidden layer size')
-parser.add_argument('--gamma', default=0.001, type=float,
-    help='constant value for L2')
+parser.add_argument('--lr', default=0.001, type=float,
+    help='learning rate')
+parser.add_argument('--gamma', default=0.2, type=float,
+    help='L2 regularization constant')
 parser.add_argument('--linear', action='store_true', default=False,
     help='set for linear model, otherwise use hidden layer')
 parser.add_argument('--nol2', action='store_true', default=False,
@@ -121,12 +121,8 @@ def main():
     n_problems = args.n_problems
     num_epochs = args.num_epochs
     hidden_size = args.hidden_size
-    domain_type = args.domain_type
 
-    if domain_type=='cross':
-        data_path = os.path.join(data, 'transferred_features_all')
-    else:
-        data_path = os.path.join(data, 'features_test')
+    data_path = os.path.join(data, 'transferred_features_all')
 
     folder_0 = os.path.join(data_path, model_names[0])
     metaval_labels = [label \
@@ -151,7 +147,7 @@ def main():
             models.append(ClassifierNetwork(input_size, hidden_size, nway).to(device))
             # Loss and optimizer
             criterion = nn.CrossEntropyLoss()
-            optimizer = torch.optim.Adam(models[model_id].parameters(), lr=0.01)
+            optimizer = torch.optim.Adam(models[model_id].parameters(), lr=args.lr)
             train_model(models[model_id], features_support_list[model_id], labels_support,
                         criterion, optimizer, num_epochs)
 
@@ -167,9 +163,9 @@ def main():
     # write the results to a file:
     fp = open('results_finetune.txt', 'a')
     if args.soft:
-        result = 'Setting: Soft ensemble ' + domain_type + '-' + data + '- ' + ', '.join(map(str, model_names))
+        result = 'Setting: Soft bagging ' + '-' + data + '- ' + ', '.join(map(str, model_names))
     else:
-        result = 'Setting: Hard ensemble ' + domain_type + '-' + data + '- ' + ', '.join(map(str, model_names))
+        result = 'Setting: Hard bagging ' + '-' + data + '- ' + ', '.join(map(str, model_names))
     if args.linear:
         result += ' linear'
     if args.nol2:

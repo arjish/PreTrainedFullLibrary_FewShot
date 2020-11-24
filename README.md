@@ -47,10 +47,14 @@ python extract_pretrained_features.py <path_to_data> -f <result_folder> -b <batc
 
 ## Few-shot training and testing:
 
-- Example:
-
+- Single library classifier example:
 ```
 python classifier_single.py data/aircraft --model resnet18 --nway 5 --kshot 1 --kquery 15 --num_epochs 200 --n_problems 600 --hidden_size 512 --lr 0.001 --gamma 0.2
+```
+
+- Full library classifier example:
+```
+python classifier_full_library.py data/aircraft --nway 20 --kshot 5 --kquery 15 --num_epochs 100 --n_problems 600 --hidden_size 512 --lr 0.0005 --gamma 0.1
 ```
 
 ## Selected arguments
@@ -69,3 +73,4 @@ python classifier_single.py data/aircraft --model resnet18 --nway 5 --kshot 1 --
    - --gamma: L2 regularization constant: `0.5`
    - --linear: Use for a linear NN architecture (no hidden layer)
    - --nol2: Use to get rid of L2 regularization
+   - --soft: Use for soft bagging when applying ensemble method, otherwise hard bagging

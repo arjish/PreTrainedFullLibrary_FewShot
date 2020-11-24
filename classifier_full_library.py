@@ -3,7 +3,6 @@ from utils import get_features_fewshot_full_library
 import os, random
 import torch
 import torch.nn as nn
-from math import ceil
 
 import argparse
 
@@ -12,8 +11,6 @@ model_names = ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152',
 
 parser = argparse.ArgumentParser(description='Finetune Classifier')
 parser.add_argument('data', help='path to dataset')
-parser.add_argument('--domain_type', default='cross',
-    choices=['self', 'cross'], help='self or cross domain testing')
 parser.add_argument('--nway', default=5, type=int,
     help='number of classes')
 parser.add_argument('--kshot', default=1, type=int,
@@ -24,21 +21,16 @@ parser.add_argument('--num_epochs', default=100, type=int,
     help='number of epochs')
 parser.add_argument('--n_problems', default=600, type=int,
     help='number of test problems')
-parser.add_argument('--hidden_size1', default=1024, type=int,
-    help='hidden layer size')
-parser.add_argument('--hidden_size2', default=128, type=int,
+parser.add_argument('--hidden_size', default=1024, type=int,
     help='hidden layer size')
 parser.add_argument('--lr', default=0.001, type=float,
     help='learning rate')
-parser.add_argument('--l2', action='store_true', default=False,
-    help='set for L2 regularization, otherwise no regularization')
 parser.add_argument('--gamma', default=0.5, type=float,
-    help='constant value for L2')
+    help='L2 regularization constant')
+parser.add_argument('--nol2', action='store_true', default=False,
+    help='set for No L2 regularization, otherwise use L2')
 parser.add_argument('--linear', action='store_true', default=False,
     help='set for linear model, otherwise use hidden layer')
-parser.add_argument('--reg_file', default='regularizer_weights_cosine.npy',
-    help='self or cross domain testing')
-
 parser.add_argument('--gpu', default=0, type=int,
     help='GPU id to use.')
 
@@ -53,9 +45,9 @@ class ClassifierNetwork(nn.Module):
     def __init__(self, input_size, num_classes):
         super(ClassifierNetwork, self).__init__()
         if not args.linear:
-            self.fc1 = nn.Linear(input_size, args.hidden_size1)
+            self.fc1 = nn.Linear(input_size, args.hidden_size)
             self.tanh = nn.Tanh()
-            self.fc2 = nn.Linear(args.hidden_size1, num_classes)
+            self.fc2 = nn.Linear(args.hidden_size, num_classes)
         else:
             self.fc1 = nn.Linear(input_size, num_classes)
 
@@ -68,19 +60,15 @@ class ClassifierNetwork(nn.Module):
 
 
 def train_model(model, features, labels, criterion, optimizer,
-                r, num_epochs):
+                num_epochs=50):
     # Train the model
     x = torch.tensor(features, dtype=torch.float32, device=device)
     y = torch.tensor(labels, dtype=torch.long, device=device)
     for epoch in range(num_epochs):
         # Forward pass
         outputs = model(x)
-        params = torch.cat([torch.flatten(param) for param in list(model.parameters())], dim=0)
-        if r is not None:
-            loss = criterion(outputs, y) + torch.dot(torch.square(torch.tensor(r, device=device)), params)
-        else:
-            loss = criterion(outputs, y)
-        if args.l2:
+        loss = criterion(outputs, y)
+        if not args.nol2:
             c = torch.tensor(args.gamma, device=device)
             l2_reg = torch.tensor(0., device=device)
             for name, param in model.named_parameters():
@@ -120,26 +108,14 @@ def main():
     n_img = kshot + kquery
     n_problems = args.n_problems
     num_epochs = args.num_epochs
-    domain_type = args.domain_type
 
-    if domain_type=='cross':
-        data_path = os.path.join(data, 'transferred_features_all')
-    else:
-        data_path = os.path.join(data, 'transferred_features_test')
+    data_path = os.path.join(data, 'transferred_features_all')
 
     folder_0 = os.path.join(data_path, model_names[0])
     labels = [label \
                       for label in os.listdir(folder_0) \
                       if os.path.isdir(os.path.join(folder_0, label)) \
                       ]
-
-    if os.path.exists(args.reg_file):
-        print("Using regularizer from", args.reg_file)
-        r = np.load(args.reg_file)
-    else:
-        r = None
-    if args.l2:
-        print("Using L2 regularizer")
 
     accs = []
     for i in range(n_problems):
@@ -160,7 +136,7 @@ def main():
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-        train_model(model, features_support, labels_support, criterion, optimizer, r, num_epochs)
+        train_model(model, features_support, labels_support, criterion, optimizer, num_epochs)
 
         accuracy_test = test_model(model, features_query, labels_query)
 
@@ -172,12 +148,12 @@ def main():
     ci95 = round(1.96 * stds / np.sqrt(n_problems), 2)
 
     # write the results to a file:
-    fp = open('results_finetune.txt', 'a')
-    result = 'Setting: Multiple ' + domain_type + '-' + data + '- ' + ', '.join(map(str, model_names))
+    fp = open('results.txt', 'a')
+    result = 'Setting: Full library ' + '-' + data + '- ' + ', '.join(map(str, model_names))
     if args.linear:
         result += ' linear'
-    if args.l2:
-        result += ' L2'
+    if args.nol2:
+        result += ' No L2'
     result += ': ' + str(nway) + '-way ' + str(kshot) + '-shot'
     result += '; Accuracy: ' + str(acc_avg)
     result += ', ' + str(ci95) + '\n'

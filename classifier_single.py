@@ -28,7 +28,7 @@ parser.add_argument('--hidden_size', default=1024, type=int,
 parser.add_argument('--lr', default=0.001, type=float,
     help='learning rate')
 parser.add_argument('--gamma', default=0.5, type=float,
-    help='constant value for L2')
+    help='L2 regularization constant')
 parser.add_argument('--linear', action='store_true', default=False,
     help='set for linear model, otherwise use hidden layer')
 parser.add_argument('--nol2', action='store_true', default=False,
