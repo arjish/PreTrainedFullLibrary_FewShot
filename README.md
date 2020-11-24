@@ -33,6 +33,7 @@ Register at [**ImageNet**](http://www.image-net.org/) and request for a username
 ```
 gsutil -m cp gs://quickdraw_dataset/full/numpy_bitmap/*.npy data/quickdraw
 ```
+- Convert numpy files to jpeg images using  this [conversion code](https://github.com/C-Aniruddh/RapidDraw/blob/in-dev/processing/process_all.py)
 
 10. VGG Flower:
 [**VGG Flower**](http://www.robots.ox.ac.uk/~vgg/data/flowers/102/102flowers.tgz),
