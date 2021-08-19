@@ -1,4 +1,5 @@
 # Few-shot Image Classification: Just Use a Libraryof Pre-trained Feature Extractors and a Simple Classifier: [**paper**](https://arxiv.org/pdf/2101.00562.pdf)
+*Accepted at ICCV 2021*
 
 ## Use the following links to download the data:
 
